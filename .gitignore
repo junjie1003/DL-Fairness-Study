@@ -1,0 +1,12 @@
+FAAP/log
+FAAP/saved_models
+FDR/checkpoints
+FDR/log
+FLAC/bias_capturing_classifiers
+FR/border
+FR/log
+FR/patch
+FR/std
+MFD/log
+MFD/results
+MFD/trained_models

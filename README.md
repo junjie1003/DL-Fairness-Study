@@ -1,6 +1,38 @@
-# An Empirical Study of Image Fairness
+# DL-Fairness-Study
 
-## Fairness Improvement Methods
+This code repository contains all the data processing and code implementations for our work titled "A Large-scale Empirical Study on Improving the Fairness of Deep Learning Models." Our research focuses on fairness issues in deep learning and includes a comprehensive summary and experimental analysis of existing fairness-improving methods on image data. We have also presented some interesting findings. In the future, we will continue to explore effective ways to enhance model fairness on image data.
+
+## Experimental Environment
+
+### Conda
+
+Conda is recommended for all configurations. [Miniconda](https://conda.io/miniconda.html) is sufficient if you do not already have conda installed.
+
+Then, to create a new Python 3.8 environment, run:
+
+```bash
+conda create -n fairness python=3.8
+conda activate fairness
+```
+
+### PyTorch
+
+We have standardized the experimental environment for all methods, conducting experiments based on PyTorch. The installed versions and methods are as follows:
+
+```bash
+# CUDA 11.3
+conda install pytorch==1.10.1 torchvision==0.11.2 torchaudio==0.10.1 cudatoolkit=11.3 -c pytorch -c conda-forge
+```
+
+### Requirements
+
+Other necessary libraries and packages are installed as follows:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Studied Methods in This Study
 
 ### Pre-processing
 
@@ -122,8 +154,6 @@ python train_cifar10/train_cifar10_bc.py --epochs 200 --lr 0.1 --gpu 0
 #### FLAC
 
 ```bash
-cd FLAC
-
 # CelebA
 python train_celeba.py --task blonde --alpha 30000 --gpu 0
 
@@ -138,8 +168,6 @@ python train_cifar10s.py --gpu 0
 #### MMD-based Fair Distillation (MFD)
 
 ```bash
-cd MFD
-
 # CelebA
 # 1. Train a teacher model
 CUDA_VISIBLE_DEVICES=0 python3 ./main.py --method scratch --dataset celeba --img-size 176 --repeat-time 1 > log/teacher_celeba_Blond_Hair.log
@@ -177,8 +205,6 @@ CUDA_VISIBLE_DEVICES=0 python3 ./main.py --mode eval --method kd_mfd --dataset c
 #### FDR
 
 ```bash
-cd FDR
-
 # CelebA
 CUDA_VISIBLE_DEVICES=0 python celeba.py --ft_lr 1e-3 --ft_epoch 1000 --alpha 2 --constraint EO > log/CelebA_BlondHair_EO.log
 CUDA_VISIBLE_DEVICES=1 python celeba.py --ft_lr 1e-3 --ft_epoch 500 --alpha 5 --constraint AE > log/CelebA_BlondHair_AE.log
@@ -198,4 +224,84 @@ CUDA_VISIBLE_DEVICES=3 python utkface.py --ft_lr 1e-3 --ft_epoch 1000 --constrai
 CUDA_VISIBLE_DEVICES=3 python cifar10s.py --ft_lr 1e-3 --ft_epoch 1000 --alpha 2 --constraint EO > log/CIFAR-10S_EO.log
 CUDA_VISIBLE_DEVICES=3 python cifar10s.py --ft_lr 1e-3 --ft_epoch 1000 --alpha 5 --constraint AE > log/CIFAR-10S_AE.log
 CUDA_VISIBLE_DEVICES=3 python cifar10s.py --ft_lr 1e-3 --ft_epoch 1000 --constraint MMF > log/CIFAR-10S_MMF.log
+```
+
+### Post-processing
+
+#### FairReprogram (FR)
+
+Step 1: Standard Training
+
+```bash
+# CelebA
+nohup python3 train.py --dataset celeba --method std --result-dir std --gpu 0 > log/celeba_std.log 2>&1 &
+# UTKFace
+nohup python3 train.py --dataset utkface --domain-attrs Age --method std --result-dir std --gpu 1 > log/utkface_age_std.log 2>&1 &
+nohup python3 train.py --dataset utkface --domain-attrs Race --method std --result-dir std --gpu 2 > log/utkface_race_std.log 2>&1 &
+# CIFAR-10S
+nohup python3 train.py --dataset cifar10s --method std --result-dir std --resume --gpu 3 > log/cifar10s_std.log 2>&1 &
+```
+
+Step 2: Reprogramming with Border Trigger
+
+```bash
+# CelebA
+nohup python3 train.py --dataset celeba --result-dir border --reprogram-size 184 --epochs 20 --adversary-with-logits --lmbda 10.0 --m repro --adversary-with-y --checkpoint std/std_resnet18_celeba_seed1_best.pth.tar --gpu 0 > log/celeba_border_eo.log 2>&1 &
+# UTKFace
+nohup python3 train.py --dataset utkface --domain-attrs Age --result-dir border --reprogram-size 184 --epochs 20 --adversary-with-logits --lmbda 10.0 --m repro --adversary-with-y --checkpoint std/std_resnet18_utkface_age_seed1_best.pth.tar --gpu 1 > log/utkface_age_border_eo.log 2>&1 &
+nohup python3 train.py --dataset utkface --domain-attrs Race --result-dir border --reprogram-size 184 --epochs 20 --adversary-with-logits --lmbda 10.0 --m repro --adversary-with-y --checkpoint std/std_resnet18_utkface_race_seed1_best.pth.tar --gpu 2 > log/utkface_race_border_eo.log 2>&1 &
+# CIFAR-10S
+nohup python3 train.py --dataset cifar10s --result-dir border --reprogram-size 32 --epochs 20 --adversary-with-logits --lmbda 10.0 --m repro --adversary-with-y --checkpoint std/std_resnet18_cifar10s_seed1_best.pth.tar --gpu 0 > log/cifar10s_border_eo.log 2>&1 &
+```
+
+Step 3: Reprogramming with Patch Trigger
+
+```bash
+# CelebA
+nohup python3 train.py --dataset celeba --result-dir patch --reprogram-size 90 --epochs 20 --adversary-with-logits --lmbda 10.0 --m rpatch --adversary-with-y --checkpoint std/std_resnet18_celeba_seed1_best.pth.tar --gpu 0 > log/celeba_patch_eo.log 2>&1 &
+# UTKFace
+nohup python3 train.py --dataset utkface --domain-attrs Age --result-dir patch --reprogram-size 80 --epochs 20 --adversary-with-logits --lmbda 10.0 --m rpatch --adversary-with-y --checkpoint std/std_resnet18_utkface_age_seed1_best.pth.tar --gpu 1 > log/utkface_age_patch_eo.log  2>&1 &
+nohup python3 train.py --dataset utkface --domain-attrs Race --result-dir patch --reprogram-size 80 --epochs 20 --adversary-with-logits --lmbda 10.0 --m rpatch --adversary-with-y --checkpoint std/std_resnet18_utkface_race_seed1_best.pth.tar --gpu 2 > log/utkface_race_patch_eo.log 2>&1 &
+# CIFAR-10S
+nohup python3 train.py --dataset cifar10s --result-dir patch --reprogram-size 2 --epochs 20 --adversary-with-logits --lmbda 10.0 --m rpatch --adversary-with-y --checkpoint std/std_resnet18_cifar10s_seed1_best.pth.tar --gpu 3 > log/cifar10s_patch_eo.log 2>&1 &
+```
+
+#### FAAP
+
+Step 1: Train deployed models
+
+```bash
+# CelebA
+nohup python train_deployed_model.py --dataset celeba --img-size 224 --pretrained --gpu 0 > log/celeba_deployed.log 2>&1 &
+# UTKFace
+nohup python train_deployed_model.py --dataset utkface --sensitive age --img-size 224 --pretrained --gpu 0 > log/utkface_age_deployed.log 2>&1 &
+nohup python train_deployed_model.py --dataset utkface --sensitive race --img-size 224 --pretrained --gpu 1 > log/utkface_race_deployed.log 2>&1 &
+# CIFAR-10S
+nohup python train_deployed_model.py --dataset cifar10s --img-size 32 --pretrained --gpu 1 > log/cifar10s_deployed.log 2>&1 &
+```
+
+Step 2: Training of FAAP
+
+```bash
+# CelebA
+nohup python faap.py --dataset celeba --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 0 > log/celeba.log 2>&1 &
+# UTKFace Age
+nohup python faap.py --dataset utkface --sensitive age --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 1 > log/utkface_age.log 2>&1 &
+# UTKFace Race
+nohup python faap.py --dataset utkface --sensitive race --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 2 > log/utkface_race.log 2>&1 &
+# CIFAR-10S
+nohup python faap.py --dataset cifar10s --lr 5e-4 --epochs 50 --batch-size 64 --img-size 32 --gpu 3 > log/cifar10s.log 2>&1 &
+```
+
+Step 3: Test with adversarial examples
+
+```bash
+# CelebA
+python test_adversarial_examples.py --dataset celeba --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 0
+# UTKFace Age
+python test_adversarial_examples.py --dataset utkface --sensitive age --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 1
+# UTKFace Race
+python test_adversarial_examples.py --dataset utkface --sensitive race --lr 5e-4 --epochs 50 --batch-size 64 --img-size 224 --gpu 2
+# CIFAR-10S
+python test_adversarial_examples.py --dataset cifar10s --lr 5e-4 --epochs 50 --batch-size 64 --img-size 32 --gpu 3
 ```
