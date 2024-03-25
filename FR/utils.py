@@ -27,19 +27,19 @@ def write_csv_rows(file_name, column_list):
         writer.writerows(column_list)
 
 
-def get_one_hot(y, num_class, device):
+def get_one_hot(y, num_class):
     # Please check, y should start from 0 and be in range [0, num_class - 1]
     if len(y.shape) == 1:
         y_new = y.unsqueeze(-1)
     else:
         y_new = y
-    y_one_hot = torch.FloatTensor(y_new.shape[0], num_class).to(device)
+    y_one_hot = torch.FloatTensor(y_new.shape[0], num_class).cuda()
     y_one_hot.zero_()
     y_one_hot.scatter_(1, y_new, 1)
     return y_one_hot
 
 
-# def evaluation(reprogram, test_loader, predictor, epoch, device):
+# def evaluation(reprogram, test_loader, predictor, epoch):
 #     if reprogram is not None:
 #         reprogram.eval()
 #     predictor.eval()
@@ -53,8 +53,8 @@ def get_one_hot(y, num_class, device):
 #     for x, y, d in pbar:
 #         y_all.append(y)
 #         d_all.append(d)
-#         x = x.to(device)
-#         y = y.to(device)
+#         x = x.cuda()
+#         y = y.cuda()
 #         with torch.no_grad():
 #             if reprogram is not None:
 #                 x = reprogram(x)
@@ -98,18 +98,18 @@ def display_result(accuracy, ret_no_class_balance):
     print(f"ED_PO1_AcrossZ: {ret_no_class_balance['ED_PO1_AcrossZ']: .4f}")
 
 
-def get_reprogram(method, image_size: int = 0, reprogram_size: int = 0, device="cpu"):
+def get_reprogram(method, image_size: int = 0, reprogram_size: int = 0):
     image_size = (image_size, image_size)
     reprogram_size = (reprogram_size, reprogram_size)
     if method in ["std", "adv"]:
         reprogram = None
     elif method == "repro":
-        reprogram = AdvProgram(reprogram_size, image_size, image_size, device=device)
+        reprogram = AdvProgram(reprogram_size, image_size, image_size)
     elif method == "rpatch":
-        reprogram = PatchProgram(patch_size=reprogram_size, out_size=image_size, device=device)
+        reprogram = PatchProgram(patch_size=reprogram_size, out_size=image_size)
     elif method == "roptim":
         k = float(reprogram_size[0]) / float(image_size[0])
-        reprogram = OptimProgram(size=image_size, k=k, device=device)
+        reprogram = OptimProgram(size=image_size, k=k)
     else:
         raise ValueError
     return reprogram
@@ -121,7 +121,7 @@ def get_transform(dataset, method, image_size, reprogram_size=None):
         std = [0.2470, 0.2435, 0.2616]
         if method in ["std", "adv", "rpatch", "roptim"]:
             transform_train = transforms.Compose(
-                [ 
+                [
                     transforms.ToPILImage(),
                     transforms.Resize(64),
                     transforms.RandomCrop(image_size),

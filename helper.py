@@ -17,23 +17,7 @@ def set_seed(seed):
     cudnn.benchmark = False  # set to False for final report
 
 
-def make_log_name(args, model_name):
-    log_name = model_name
-
-    if args.dataset == "celeba":
-        log_name += f"_{args.dataset}_{args.target.lower()}"
-    elif args.dataset == "utkface":
-        log_name += f"_{args.dataset}_{args.sensitive}"
-    else:
-        log_name += f"_{args.dataset}"
-
-    log_name += f"_seed{args.seed}"
-
-    return log_name
-
-
 def get_results(filename, metric):
-    # print(f"File name: {filename}")
     print(f"Metric name: {metric}")
     with open(filename, "r", encoding="UTF-8") as f:
         lines = f.readlines()
@@ -49,7 +33,6 @@ def get_results(filename, metric):
 
 
 def get_metric_list(filename, metric):
-
     with open(filename, "r", encoding="UTF-8") as f:
         lines = f.readlines()
         for line in lines:

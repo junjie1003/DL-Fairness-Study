@@ -5,14 +5,17 @@ import torch.nn as nn
 from pathlib import Path
 from copy import deepcopy
 
-from models import ResNet18
-from arguments import get_args
+project_dir = "/root/DL-Fairness-Study"
+sys.path.insert(1, os.path.join(project_dir, "FAAP"))
 
-sys.path.insert(1, "/root/study")
+from models import ResNet18
 from datasets.celeba import get_celeba
 from datasets.utkface import get_utkface
 from datasets.cifar10s import get_cifar10s
-from helper import set_seed, make_log_name
+
+sys.path.insert(1, project_dir)
+from helper import set_seed
+from arguments import get_args
 
 args = get_args()
 
@@ -75,42 +78,42 @@ def main():
     print(args)
     set_seed(args.seed)
 
-    save_dir = Path(f"{args.save_dir}/{args.date}")
+    if args.dataset in ["celeba", "cifar10s"]:
+        exp_name = f"deployed-{args.dataset}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+    elif args.dataset == "utkface":
+        exp_name = f"deployed-utkface_{args.sensitive}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+    save_dir = Path(f"{project_dir}/checkpoints/{exp_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    log_name = make_log_name(args, model_name="deployed_model")
+    data_dir = f"{project_dir}/data"
     num_classes = 10 if args.dataset == "cifar10s" else 2
 
-    # Define what device we are using
-    print("CUDA Available: ", torch.cuda.is_available())
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     # Load datasets
-    data_dir = f"{args.data_dir}/{args.dataset}"
+    dataset_dir = f"{data_dir}/{args.dataset}"
     if args.dataset == "celeba":
         train_dataset, train_loader = get_celeba(
-            root=args.data_dir, split="train", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="train", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
         valid_dataset, valid_loader = get_celeba(
-            root=args.data_dir, split="valid", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="valid", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
         test_dataset, test_loader = get_celeba(
-            root=args.data_dir, split="test", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="test", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
     elif args.dataset == "utkface":
         train_dataset, train_loader = get_utkface(
-            root=data_dir, split="train", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="train", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
         valid_dataset, valid_loader = get_utkface(
-            root=data_dir, split="valid", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="valid", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
         test_dataset, test_loader = get_utkface(
-            root=data_dir, split="test", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="test", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
     elif args.dataset == "cifar10s":
-        train_dataset, train_loader = get_cifar10s(root=data_dir, split="train", img_size=args.img_size, batch_size=args.batch_size)
-        valid_dataset, valid_loader = get_cifar10s(root=data_dir, split="valid", img_size=args.img_size, batch_size=args.batch_size)
-        test_dataset, test_loader = get_cifar10s(root=data_dir, split="test", img_size=args.img_size, batch_size=args.batch_size)
+        train_dataset, train_loader = get_cifar10s(root=dataset_dir, split="train", img_size=args.img_size, batch_size=args.batch_size)
+        valid_dataset, valid_loader = get_cifar10s(root=dataset_dir, split="valid", img_size=args.img_size, batch_size=args.batch_size)
+        test_dataset, test_loader = get_cifar10s(root=dataset_dir, split="test", img_size=args.img_size, batch_size=args.batch_size)
 
     # Train the deployed model
     deployed_model = ResNet18(num_classes=num_classes, pretrained=args.pretrained).cuda()
@@ -156,7 +159,7 @@ def main():
     print("Test Accuracy: %.3f" % (test_acc))
 
     # Save the best model
-    save_file = os.path.join(save_dir, log_name + ".pt")
+    save_file = os.path.join(f"{save_dir}/best_model.pt")
     torch.save(best_deployed_model.state_dict(), save_file)
 
 

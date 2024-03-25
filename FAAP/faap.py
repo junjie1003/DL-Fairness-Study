@@ -1,22 +1,24 @@
 import os
 import sys
 import time
-import numpy as np
-from pathlib import Path
-
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+
+from pathlib import Path
 from torch.distributions import Categorical
 
-from arguments import get_args
-from models import Discriminator, Generator, ResNet18
-
-sys.path.insert(1, "/root/study")
+project_dir = "/root/DL-Fairness-Study"
+sys.path.insert(1, os.path.join(project_dir, "FAAP"))
 from datasets.celeba import get_celeba
 from datasets.utkface import get_utkface
 from datasets.cifar10s import get_cifar10s
-from helper import set_seed, make_log_name
+from models import Discriminator, Generator, ResNet18
+
+sys.path.insert(1, project_dir)
+from helper import set_seed
+from arguments import get_args
 
 args = get_args()
 
@@ -32,17 +34,16 @@ def init_weights(m):
 
 
 class FAAP:
-    def __init__(self, model, device, save_dir, log_name, epochs, channels=3, box_min=-1, box_max=1):
+    def __init__(self, model, save_dir, log_name, epochs, channels=3, box_min=-1, box_max=1):
         self.model = model
-        self.device = device
         self.save_dir = save_dir
         self.log_name = log_name
         self.epochs = epochs
         self.box_min = box_min
         self.box_max = box_max
 
-        self.netG = Generator(channels).to(device)
-        self.netD = Discriminator().to(device)
+        self.netG = Generator(channels).cuda()
+        self.netD = Discriminator().cuda()
 
         # Initialize all weights
         self.netG.apply(init_weights)
@@ -108,7 +109,7 @@ class FAAP:
             for images, labels, biases in train_dataloader:
                 # if epoch == 1:
                 #     print(images, images.shape)
-                images, labels, biases = images.to(self.device), labels.to(self.device), biases.to(self.device)
+                images, labels, biases = images.cuda(), labels.cuda(), biases.cuda()
 
                 loss_D_batch, loss_G_batch = self.train_batch(images, labels, biases)
 
@@ -119,8 +120,8 @@ class FAAP:
             print("Epoch %d:\nloss_D: %.3f, loss_G: %.3f\n" % (epoch, loss_D_sum / num_batch, loss_G_sum / num_batch))
 
             # Save generators
-            if epoch > self.epochs - 10:
-                netG_filename = os.path.join(self.save_dir, f"{self.log_name}_epoch{str(epoch)}.pt")
+            if epoch == self.epochs:
+                netG_filename = Path(f"{self.log_name}/best_model.pt")
                 torch.save(self.netG.state_dict(), netG_filename)
 
 
@@ -131,58 +132,61 @@ if __name__ == "__main__":
     np.set_printoptions(precision=3)
     torch.set_printoptions(precision=3, sci_mode=False)
 
-    save_dir = Path(f"{args.save_dir}/{args.date}")
+    if args.dataset in ["celeba", "cifar10s"]:
+        exp_name = f"faap-{args.dataset}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+    elif args.dataset == "utkface":
+        exp_name = f"faap-utkface_{args.sensitive}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+    save_dir = Path(f"{project_dir}/checkpoints/{exp_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    log_name_d = make_log_name(args, model_name="deployed_model")
-    log_name_g = make_log_name(args, model_name="generator")
+    data_dir = f"{project_dir}/data"
+    log_name_g = f"{project_dir}/checkpoints/{exp_name}"
+    print(f"log name of generator: {log_name_g}")
+    log_name_d = f"{project_dir}/checkpoints/{args.model_path}"
+    print(f"log name of deployed model: {log_name_d}")
     num_classes = 10 if args.dataset == "cifar10s" else 2
 
-    # Define what device we are using
-    print("CUDA Available: ", torch.cuda.is_available())
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     # Load datasets
-    data_dir = f"{args.data_dir}/{args.dataset}"
+    dataset_dir = f"{data_dir}/{args.dataset}"
     if args.dataset == "celeba":
         train_dataset, train_loader = get_celeba(
-            root=args.data_dir, split="train", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="train", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
         valid_dataset, valid_loader = get_celeba(
-            root=args.data_dir, split="valid", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="valid", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
         test_dataset, test_loader = get_celeba(
-            root=args.data_dir, split="test", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
+            root=data_dir, split="test", target_attr=args.target, img_size=args.img_size, batch_size=args.batch_size
         )
     elif args.dataset == "utkface":
         train_dataset, train_loader = get_utkface(
-            root=data_dir, split="train", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="train", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
         valid_dataset, valid_loader = get_utkface(
-            root=data_dir, split="valid", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="valid", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
         test_dataset, test_loader = get_utkface(
-            root=data_dir, split="test", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
+            root=dataset_dir, split="test", bias_attr=args.sensitive, img_size=args.img_size, batch_size=args.batch_size
         )
     elif args.dataset == "cifar10s":
-        train_dataset, train_loader = get_cifar10s(root=data_dir, split="train", img_size=args.img_size, batch_size=args.batch_size)
-        valid_dataset, valid_loader = get_cifar10s(root=data_dir, split="valid", img_size=args.img_size, batch_size=args.batch_size)
-        test_dataset, test_loader = get_cifar10s(root=data_dir, split="test", img_size=args.img_size, batch_size=args.batch_size)
+        train_dataset, train_loader = get_cifar10s(root=dataset_dir, split="train", img_size=args.img_size, batch_size=args.batch_size)
+        valid_dataset, valid_loader = get_cifar10s(root=dataset_dir, split="valid", img_size=args.img_size, batch_size=args.batch_size)
+        test_dataset, test_loader = get_cifar10s(root=dataset_dir, split="test", img_size=args.img_size, batch_size=args.batch_size)
 
-    ckpt_path = os.path.join(save_dir, log_name_d + ".pt")
-
-    deployed_model = ResNet18(num_classes=num_classes, pretrained=False).to(device)
-    deployed_model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    ckpt_path = f"{log_name_d}/best_model.pt"
+    print(ckpt_path)
+    deployed_model = ResNet18(num_classes=num_classes, pretrained=False).cuda()
+    deployed_model.load_state_dict(torch.load(ckpt_path))
     deployed_model.eval()
 
     start_time = time.time()
 
     if args.dataset == "celeba":
-        faap = FAAP(deployed_model, device, save_dir, log_name_g, args.epochs, channels=3, box_min=0, box_max=1)
+        faap = FAAP(deployed_model, save_dir, log_name_g, args.epochs, channels=3, box_min=0, box_max=1)
     elif args.dataset == "utkface":
-        faap = FAAP(deployed_model, device, save_dir, log_name_g, args.epochs, channels=3, box_min=0, box_max=1)
+        faap = FAAP(deployed_model, save_dir, log_name_g, args.epochs, channels=3, box_min=0, box_max=1)
     elif args.dataset == "cifar10s":
-        faap = FAAP(deployed_model, device, save_dir, log_name_g, args.epochs, channels=3, box_min=-1, box_max=1)
+        faap = FAAP(deployed_model, save_dir, log_name_g, args.epochs, channels=3, box_min=-1, box_max=1)
 
     faap.train(train_loader)
 

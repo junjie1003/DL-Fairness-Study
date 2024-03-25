@@ -58,7 +58,7 @@ class BiasedUTKFace(SamplingDataset):
             data_split = 'train' if self.train else 'test'
             self.files, self.targets, self.bias_targets = pickle.load(open(save_path / f'{data_split}_dataset.pkl', 'rb'))
             if split in ['valid', 'test']:
-                save_path = Path(f'/root/study/data/clusters/utk_face_rand_indices_{bias_attr}.pkl')
+                save_path = Path(f'{Path(root).parent.absolute()}/clusters/utk_face_rand_indices_{bias_attr}.pkl')
                 if not save_path.exists():
                     rand_indices = torch.randperm(len(self.targets))
                     pickle.dump(rand_indices, open(save_path, 'wb'))

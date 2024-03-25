@@ -1,96 +1,34 @@
 import os
 import sys
 import time
-import argparse
+import torch
 import warnings
 from pathlib import Path
 
-import torch
 from torch import nn
+from numpy import mean, std
 from torch.utils.data import DataLoader
 from torchvision.models.resnet import resnet18
 from torch.cuda.amp import autocast, GradScaler
 
+project_dir = "/root/DL-Fairness-Study"
 warnings.filterwarnings("ignore")
+sys.path.insert(1, os.path.join(project_dir, "FR"))
+
 from utils import *
 from models.model_zoo import *
 from models.resnet9 import resnet9
-
-sys.path.insert(1, "/root/study")
-from numpy import mean, std
 from datasets.celeba import MyCelebA
 from datasets.utkface import UTKFace
 from datasets.cifar10s import CIFAR_10S
+
+sys.path.insert(1, project_dir)
+
+from arguments import get_args
 from metrics import get_metric_index, get_all_metrics, print_all_metrics
 
 
-def get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--evaluate", action="store_true")
-    parser.add_argument("--exp-name", type=str, default=None)
-    parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--domain-attrs", type=str, default="Male")
-    parser.add_argument("--result-dir", type=str, default="results")
-    parser.add_argument("--resume", action="store_true", default=False)
-    parser.add_argument("--target-attrs", type=str, default="Blond_Hair")
-    parser.add_argument("--data-dir", type=str, default="/root/study/data")
-    parser.add_argument("--gpu", default=0, type=int, help="CUDA visible device")
-    parser.add_argument("--dataset", default="celeba", type=str, choices=["celeba", "utkface", "cifar10s"])
-    parser.add_argument("--arch", type=str, default="resnet18", choices=["resnet18", "resnet20s", "resnet9"])
-
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--wd", type=float, default=2e-5)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--num-workers", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=512)
-
-    parser.add_argument(
-        "--method",
-        "--m",
-        type=str,
-        default="std",
-        choices=["std", "adv", "repro", "rpatch", "roptim"],
-        help="Method: standard training, adv training, reprogram (vanilla, patch, optimization-based)",
-    )
-
-    # ================================ Adv Training ================================ #
-    parser.add_argument(
-        "--adversary-with-y",
-        action="store_true",
-        default=False,
-        help="True for Equalized Odds, target on [ED_PO1_AcrossZ], " "False for Demographic Parity, target on [ED_FR_AcrossZ].",
-    )
-    parser.add_argument("--adversary-with-logits", action="store_true", default=False)
-    parser.add_argument("--adversary-lr", type=float, default=1e-3)
-    parser.add_argument("--lmbda", type=float, default=0.5, help="The coefficient of the adversarial loss applied to CE loss")
-
-    # ================================ Reprogramming ================================ #
-    parser.add_argument(
-        "--reprogram-size",
-        type=int,
-        default=200,
-        help="This parameter has different meanings for different reprogramming methods. "
-        "For vanilla reprogramming method, the size of the resized image."
-        "For reprogram patch, the patch size."
-        "For optimization-based reprogram, the equivalent size of a patch for optimized pixels.",
-    )
-    parser.add_argument(
-        "--trigger-data-num",
-        type=int,
-        default=0,
-        help="How many data do you want to use to train reprogram, default for using the whole training set!",
-    )
-
-    args = parser.parse_args()
-    args.domain_attrs = args.domain_attrs.split(",")
-    args.target_attrs = args.target_attrs.split(",")
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-
-    return args
-
-
-def fairness_evaluation(reprogram, test_loader, predictor, epoch, device):
+def fairness_evaluation(reprogram, test_loader, predictor, epoch):
     if reprogram is not None:
         reprogram.eval()
     predictor.eval()
@@ -103,8 +41,8 @@ def fairness_evaluation(reprogram, test_loader, predictor, epoch, device):
     for x, y, d in pbar:
         y_all.append(y)
         d_all.append(d)
-        x = x.to(device)
-        y = y.to(device)
+        x = x.cuda()
+        y = y.cuda()
         with torch.no_grad():
             if reprogram is not None:
                 x = reprogram(x)
@@ -129,18 +67,16 @@ def fairness_evaluation(reprogram, test_loader, predictor, epoch, device):
 
 
 def main(args):
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
     setup_seed(args.seed)
 
     # Sanity Check!
-    assert args.data_dir is not None
-    assert args.method in ["std", "adv"] or args.checkpoint is not None
+    assert args.rmethod in ["std", "adv"] or args.model_path is not None
 
-    metric_index = get_metric_index()
-    metric_index.remove("time per epoch")
-    print(metric_index)
+    # metric_index = get_metric_index()
+    # metric_index.remove("time per epoch")
+    # print(metric_index)
 
-    # if args.evaluate and args.method in ["repro", "rpatch"]:
+    # if args.checkpoint and args.rmethod in ["repro", "rpatch"]:
     #     result_dir = f"/root/study/results/{args.dataset}"
     #     result_path = Path(result_dir)
     #     result_path.mkdir(parents=True, exist_ok=True)
@@ -175,53 +111,53 @@ def main(args):
     #         results[m_index] = []
 
     # make save path dir
-    os.makedirs(args.result_dir, exist_ok=True)
+    rmethod = {"std": "std", "repro": "border", "rpatch": "patch"}
+    if args.dataset in ["celeba", "cifar10s"]:
+        model_attr_name = f"fr_{rmethod[args.rmethod]}-{args.dataset}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+    elif args.dataset == "utkface":
+        model_attr_name = (
+            f"fr_{rmethod[args.rmethod]}-{args.dataset}_{args.sensitive}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
+        )
 
-    model_attr_name = f"{args.method}_{args.arch}_{args.dataset}_"
-    if args.dataset == "utkface":
-        for attr in args.domain_attrs:
-            model_attr_name += f"{attr.lower()}_"
-
-    if args.method in ["adv", "repro", "rpatch", "rpoptim"]:
-        model_attr_name += f"lambda{args.lmbda}_"
-        model_attr_name += "y_" if args.adversary_with_y else "n_"
-        if args.method in ["repro", "rpatch", "rpoptim"]:
-            model_attr_name += f"size{args.reprogram_size}_"
+    if args.rmethod in ["adv", "repro", "rpatch", "rpoptim"]:
+        model_attr_name += f"-lambda{args.lmbda}"
+        model_attr_name += "-eo" if args.adversary_with_y else "-dp"
+        if args.rmethod in ["repro", "rpatch", "rpoptim"]:
+            model_attr_name += f"-size{args.reprogram_size}"
 
     if args.trigger_data_num > 0:
-        model_attr_name += f"num{args.trigger_data_num}_"
+        model_attr_name += f"-num{args.trigger_data_num}"
 
-    model_attr_name += f"seed{args.seed}"
-    if args.exp_name is not None:
-        model_attr_name += f"_{args.exp_name}"
+    output_dir = f"{project_dir}/checkpoints/{model_attr_name}"
+    save_path = Path(output_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
 
     image_size = 32 if args.dataset == "cifar10s" else 224
     transform_train, transform_test = get_transform(
-        dataset=args.dataset, method=args.method, image_size=image_size, reprogram_size=args.reprogram_size
+        dataset=args.dataset, method=args.rmethod, image_size=image_size, reprogram_size=args.reprogram_size
     )
 
     # We will use this a lot.
-    use_reprogram = args.method in ["repro", "rpatch", "roptim"]
-    use_adv = args.method in ["adv", "repro", "rpatch", "roptim"]
+    use_reprogram = args.rmethod in ["repro", "rpatch", "roptim"]
+    use_adv = args.rmethod in ["adv", "repro", "rpatch", "roptim"]
 
     num_class = 10 if args.dataset == "cifar10s" else 2
-    attr_class = 2 ** len(args.domain_attrs)
-    assert attr_class == 2
+    attr_class = 2
 
     # add dropout
     dropout_prob = 0.5
     classifier = nn.Sequential(nn.Linear(512, 256), nn.ReLU(), nn.Dropout(p=dropout_prob), nn.Linear(256, num_class))
 
     # init model
-    if args.arch == "resnet18":
+    if args.model == "resnet18":
         predictor = resnet18(pretrained=False)
         predictor.fc = classifier
         # predictor.fc = nn.Linear(512, num_class)
-    elif args.arch == "resnet9":
+    elif args.model == "resnet9":
         predictor = resnet9(num_classes=num_class)
     else:
         predictor = resnet20s(num_class)
-    predictor = predictor.to(device)
+    predictor = predictor.cuda()
 
     fc_params = list(map(id, predictor.fc.parameters()))
     base_params = filter(lambda p: id(p) not in fc_params, predictor.parameters())
@@ -242,7 +178,7 @@ def main(args):
             with_logits=args.adversary_with_logits,
             use_mlp=True,
         )
-        adversary = adversary.to(device)
+        adversary = adversary.cuda()
         a_optim = torch.optim.Adam(adversary.parameters(), lr=args.adversary_lr, weight_decay=args.wd)
         a_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
             a_optim, gamma=0.1, milestones=[int(0.3 * args.epochs), int(0.6 * args.epochs), int(0.9 * args.epochs)]
@@ -254,7 +190,7 @@ def main(args):
 
     # Initialize reprogrammers
     if use_reprogram:
-        reprogram = get_reprogram(method=args.method, image_size=image_size, reprogram_size=args.reprogram_size, device=device)
+        reprogram = get_reprogram(method=args.rmethod, image_size=image_size, reprogram_size=args.reprogram_size)
         r_optim = torch.optim.Adam(reprogram.parameters(), lr=args.lr, weight_decay=args.wd)
         r_lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
             r_optim, gamma=0.1, milestones=[int(0.3 * args.epochs), int(0.6 * args.epochs), int(0.9 * args.epochs)]
@@ -268,9 +204,12 @@ def main(args):
 
     # Load checkpoints
     start_epoch = 0
-    best_metric = 0.0 if args.method == "std" else 1.0
-    if args.checkpoint is not None:
-        checkpoint = torch.load(args.checkpoint, map_location=device)
+    best_metric = 0.0 if args.rmethod == "std" else 1.0
+    if args.model_path is not None:
+        if not args.checkpoint:
+            checkpoint = torch.load(f"{project_dir}/checkpoints/{args.model_path}/best_model.pth.tar")
+        else:
+            checkpoint = torch.load(f"{project_dir}/checkpoints/{args.model_path}/best_model.pt")
         predictor.load_state_dict(checkpoint["predictor"])
         # We use the args.resume to distinguish whether the user want to resume the checkpoint
         # or they just want to load the pretrained models and train the reprogram from scratch.
@@ -288,21 +227,22 @@ def main(args):
                 r_optim.load_state_dict(checkpoint["r_optim"])
                 r_lr_scheduler.load_state_dict(checkpoint["r_lr_scheduler"])
 
-    data_dir = os.path.join(args.data_dir, args.dataset)
+    data_dir = f"{project_dir}/data"
+    dataset_dir = f"{data_dir}/{args.dataset}"
     if args.dataset == "celeba":
-        train_set = MyCelebA(root=args.data_dir, split="train", transform=transform_train, target_attr=args.target_attrs[0])
-        val_set = MyCelebA(root=args.data_dir, split="valid", transform=transform_test, target_attr=args.target_attrs[0])
-        test_set = MyCelebA(root=args.data_dir, split="test", transform=transform_test, target_attr=args.target_attrs[0])
+        train_set = MyCelebA(root=data_dir, split="train", transform=transform_train, target_attr=args.target)
+        val_set = MyCelebA(root=data_dir, split="valid", transform=transform_test, target_attr=args.target)
+        test_set = MyCelebA(root=data_dir, split="test", transform=transform_test, target_attr=args.target)
     elif args.dataset == "utkface":
-        bias_attr = args.domain_attrs[0].lower()
+        bias_attr = args.sensitive
         print(bias_attr)
-        train_set = UTKFace(root=data_dir, split="train", transform=transform_train, bias_attr=bias_attr)
-        val_set = UTKFace(root=data_dir, split="valid", transform=transform_test, bias_attr=bias_attr)
-        test_set = UTKFace(root=data_dir, split="test", transform=transform_test, bias_attr=bias_attr)
+        train_set = UTKFace(root=dataset_dir, split="train", transform=transform_train, bias_attr=bias_attr)
+        val_set = UTKFace(root=dataset_dir, split="valid", transform=transform_test, bias_attr=bias_attr)
+        test_set = UTKFace(root=dataset_dir, split="test", transform=transform_test, bias_attr=bias_attr)
     elif args.dataset == "cifar10s":
-        train_set = CIFAR_10S(root=data_dir, split="train", transform=transform_train, skew_ratio=0.95)
-        val_set = CIFAR_10S(root=data_dir, split="valid", transform=transform_test, skew_ratio=0.95)
-        test_set = CIFAR_10S(root=data_dir, split="test", transform=transform_test, skew_ratio=0.95)
+        train_set = CIFAR_10S(root=dataset_dir, split="train", transform=transform_train, skew_ratio=0.95)
+        val_set = CIFAR_10S(root=dataset_dir, split="valid", transform=transform_test, skew_ratio=0.95)
+        test_set = CIFAR_10S(root=dataset_dir, split="test", transform=transform_test, skew_ratio=0.95)
     else:
         raise ValueError
 
@@ -310,12 +250,12 @@ def main(args):
     val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
     test_loader = DataLoader(dataset=test_set, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
-    if args.evaluate or args.checkpoint is not None:
+    if args.checkpoint or args.model_path is not None:
         print("================= Evaluating on Test Set before Training =================")
-        test_result, test_acc = fairness_evaluation(None, test_loader, predictor, -1, device)
+        test_result, test_acc = fairness_evaluation(None, test_loader, predictor, -1)
         print(f"Test Accuracy: {test_acc}")
         print(test_result)
-        if args.evaluate:
+        if args.checkpoint:
             sys.exit()
 
     time_per_epoch = []
@@ -323,9 +263,9 @@ def main(args):
 
     for epoch in range(start_epoch, args.epochs):
         # training
-        if args.method == "std":
+        if args.rmethod == "std":
             predictor.train()
-        elif args.method == "adv":
+        elif args.rmethod == "adv":
             predictor.train()
             adversary.train()
         else:
@@ -341,14 +281,14 @@ def main(args):
         total_num = 0
         true_num = 0
         for x, y, d in pbar:
-            x, y, d = x.to(device), y.to(device), d.to(device)
-            y_one_hot = get_one_hot(y, num_class, device)  # one-hot [bs, num_class]
-            d_one_hot = get_one_hot(d, attr_class, device)  # one-hot [bs, attr_class]
+            x, y, d = x.cuda(), y.cuda(), d.cuda()
+            y_one_hot = get_one_hot(y, num_class)  # one-hot [bs, num_class]
+            d_one_hot = get_one_hot(d, attr_class)  # one-hot [bs, attr_class]
 
             p_optim.zero_grad()
-            if args.method != "std":
+            if args.rmethod != "std":
                 a_optim.zero_grad()
-                if args.method != "adv":
+                if args.rmethod != "adv":
                     r_optim.zero_grad()
 
             with autocast():
@@ -358,7 +298,7 @@ def main(args):
                 lgt = predictor(x)
                 # print(lgt.shape)
                 pred_loss = nn.functional.cross_entropy(lgt, y_one_hot)
-                if args.method != "std":
+                if args.rmethod != "std":
                     protect_pred = adversary(lgt, y=y_one_hot if args.adversary_with_y else None)
                     adversary_loss = torch.nn.functional.cross_entropy(protect_pred, d_one_hot)
 
@@ -398,9 +338,9 @@ def main(args):
             pbar.set_description(f"Training Epoch {epoch} Acc {100 * acc:.2f}%")
         pbar.set_description(f"Training Epoch {epoch} Acc {100 * true_num / total_num:.2f}%")
 
-        if args.method == "std":
+        if args.rmethod == "std":
             p_lr_scheduler.step()
-        elif args.method == "adv":
+        elif args.rmethod == "adv":
             p_lr_scheduler.step()
             a_lr_scheduler.step()
         else:
@@ -409,11 +349,11 @@ def main(args):
 
         # evaluating
         print("================= Evaluating on Validation Set =================")
-        res, accuracy = fairness_evaluation(reprogram, val_loader, predictor, epoch, device)
+        res, accuracy = fairness_evaluation(reprogram, val_loader, predictor, epoch)
         print(res)
         print(accuracy)
 
-        if args.method == "std":
+        if args.rmethod == "std":
             metric = res["bacc"]
             if metric > best_metric:
                 print("+++++++++++ Find New Best Metric +++++++++++")
@@ -425,15 +365,15 @@ def main(args):
                     "epoch": epoch,
                     "best_metric": best_metric,
                 }
-                if args.method != "std":
+                if args.rmethod != "std":
                     cp["adversary"] = adversary.state_dict()
                     cp["a_optim"] = a_optim.state_dict()
                     cp["a_lr_scheduler"] = a_lr_scheduler.state_dict()
-                    if args.method != "adv":
+                    if args.rmethod != "adv":
                         cp["reprogram"] = reprogram.state_dict()
                         cp["r_optim"] = r_optim.state_dict()
                         cp["r_lr_scheduler"] = r_lr_scheduler.state_dict()
-                torch.save(cp, os.path.join(args.result_dir, f"{model_attr_name}_best.pth.tar"))
+                torch.save(cp, f"{save_path}/best_model.pt")
         else:
             metric = res["aaod"]
             if metric < best_metric:
@@ -446,17 +386,17 @@ def main(args):
                     "epoch": epoch,
                     "best_metric": best_metric,
                 }
-                if args.method != "std":
+                if args.rmethod != "std":
                     cp["adversary"] = adversary.state_dict()
                     cp["a_optim"] = a_optim.state_dict()
                     cp["a_lr_scheduler"] = a_lr_scheduler.state_dict()
-                    if args.method != "adv":
+                    if args.rmethod != "adv":
                         cp["reprogram"] = reprogram.state_dict()
                         cp["r_optim"] = r_optim.state_dict()
                         cp["r_lr_scheduler"] = r_lr_scheduler.state_dict()
-                torch.save(cp, os.path.join(args.result_dir, f"{model_attr_name}_best.pth.tar"))
+                torch.save(cp, f"{save_path}/best_model.pt")
         print("================= Evaluating on Test Set =================")
-        test_result_list, accuracy = fairness_evaluation(reprogram, test_loader, predictor, epoch, device)
+        test_result_list, accuracy = fairness_evaluation(reprogram, test_loader, predictor, epoch)
         print(test_result_list)
         print(accuracy)
 

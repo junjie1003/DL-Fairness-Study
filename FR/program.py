@@ -16,17 +16,17 @@ class Program(nn.Module):
 
 
 class AdvProgram(nn.Module):
-    def __init__(self, in_size, out_size, mask_size, device=torch.device('cuda')):
+    def __init__(self, in_size, out_size, mask_size):
         super(AdvProgram, self).__init__()
 
         self.in_size = in_size
         self.out_size = out_size
-        self.program = Program(out_size).to(device)
+        self.program = Program(out_size).cuda()
 
         l_pad = int((mask_size[0] - in_size[0] + 1) / 2)
         r_pad = int((mask_size[0] - in_size[0]) / 2)
 
-        mask = torch.zeros(3, *in_size, device=device)
+        mask = torch.zeros(3, *in_size).cuda()
         self.mask = F.pad(mask, (l_pad, r_pad, l_pad, r_pad), value=1)
 
     def forward(self, x):
@@ -35,18 +35,18 @@ class AdvProgram(nn.Module):
 
 
 class PatchProgram(nn.Module):
-    def __init__(self, patch_size, out_size, loc=0, device=torch.device('cuda')):
+    def __init__(self, patch_size, out_size, loc=0):
         super(PatchProgram, self).__init__()
 
         assert len(patch_size) == 2 and len(out_size) == 2 and patch_size[0] * 2 < out_size[0]
 
         self.trigger_size = patch_size
         self.out_size = out_size
-        self.program = Program(out_size).to(device)
+        self.program = Program(out_size).cuda()
 
-        mask = torch.ones(3, *patch_size, device=device)
+        mask = torch.ones(3, *patch_size).cuda()
         # background
-        bg = torch.zeros(3, *out_size, device=device)
+        bg = torch.zeros(3, *out_size).cuda()
 
         # loc represents different corners:
         # 01
@@ -70,14 +70,13 @@ class PatchProgram(nn.Module):
 
 
 class OptimProgram(nn.Module):
-    def __init__(self, size, k, device=torch.device('cuda')):
+    def __init__(self, size, k):
         super(OptimProgram, self).__init__()
         self.size = size
         self.k = k
-        self.device = device
-        self.program = Program(size).to(device)
+        self.program = Program(size).cuda()
 
-        self.scores = torch.nn.Parameter(data=torch.Tensor(3, *size)).to(device)
+        self.scores = torch.nn.Parameter(data=torch.Tensor(3, *size)).cuda()
         self.scores.data.uniform_(-1, 1)
 
     def forward(self, x):

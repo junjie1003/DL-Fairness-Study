@@ -1,19 +1,18 @@
 import os
+import sys
 import time
+import torch
 import logging
 import argparse
 import datetime
 import numpy as np
+from torch import nn
 from tqdm import tqdm
 from pathlib import Path
 from numpy import mean, std
 
-import torch
-from torch import nn, optim
-
-import sys
-
-sys.path.insert(1, "./")
+project_dir = "/root/DL-Fairness-Study"
+sys.path.insert(1, os.path.join(project_dir, "FLAC"))
 
 from flac import flac_loss
 from models.resnet import ResNet18
@@ -21,30 +20,10 @@ from utils.logging import set_logging
 from datasets.cifar10s import get_cifar10s
 from utils.utils import AverageMeter, MultiDimAverageMeter, accuracy, load_model, save_model, set_seed, pretty_dict
 
-sys.path.insert(1, "/root/study")
+sys.path.insert(1, project_dir)
+
+from arguments import get_args
 from metrics import get_metric_index, get_all_metrics, print_all_metrics
-
-
-def parse_option():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--exp_name", type=str, default="test")
-    parser.add_argument("--gpu", type=int, default=0)
-    parser.add_argument(
-        "--color_classifier",
-        type=str,
-        default="./bias_capturing_classifiers/bcc_cifar10s.pth",
-    )
-    parser.add_argument("--epochs", type=int, default=200, help="number of training epochs")
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--bs", type=int, default=128, help="batch_size")
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--alpha", type=float, default=1000)
-    parser.add_argument("--skewed_ratio", type=float, default=0.95)
-
-    opt = parser.parse_args()
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(opt.gpu)
-
-    return opt
 
 
 def train_per_epoch(model, train_loader, criterion, optimizer):
@@ -192,67 +171,100 @@ def train(opt, model, protected_net, train_loader, criterion, optimizer):
 
 
 def main():
-    opt = parse_option()
+    opt = get_args()
+    exp_name = f"flac-cifar10s-lr{opt.lr}-bs{opt.batch_size}-epochs{opt.epochs}-alpha{opt.alpha}-seed{opt.seed}"
 
-    exp_name = f"flac-cifar10s-{opt.exp_name}-lr{opt.lr}-alpha{opt.alpha}-bs{opt.bs}-seed{opt.seed}"
-    opt.exp_name = exp_name
+    # result_dir = "../results/cifar10s"
+    # result_path = Path(result_dir)
+    # result_path.mkdir(parents=True, exist_ok=True)
+    # fout = open("/".join([str(result_path), "flac.txt"]), "w")
 
-    result_dir = "../results/cifar10s"
-    result_path = Path(result_dir)
-    result_path.mkdir(parents=True, exist_ok=True)
-    fout = open("/".join([str(result_path), "flac.txt"]), "w")
+    # results = {}
+    # metric_index = get_metric_index()
+    # for m_index in metric_index:
+    #     results[m_index] = []
 
-    results = {}
-    metric_index = get_metric_index()
-    for m_index in metric_index:
-        results[m_index] = []
+    repeat_time = 1
 
-    repeat_time = 10
-
-    output_dir = f"results/{exp_name}"
+    output_dir = f"{project_dir}/checkpoints/{exp_name}"
     save_path = Path(output_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
-    set_logging(exp_name, "INFO", str(save_path))
-    logging.info(f"Set seed: {opt.seed}")
+    print(f"Set seed: {opt.seed}")
     set_seed(opt.seed)
-    logging.info(f"save_path: {save_path}")
+    print(f"save_path: {save_path}")
 
     np.set_printoptions(precision=3)
     torch.set_printoptions(precision=3)
 
-    root = "../data/cifar10s"
-    train_loader = get_cifar10s(root, split="train", batch_size=opt.bs, aug=False, skewed_ratio=opt.skewed_ratio)
-    val_loader = get_cifar10s(root, split="valid", batch_size=opt.bs, aug=False, skewed_ratio=opt.skewed_ratio)
-    test_loader = get_cifar10s(root, split="test", batch_size=opt.bs, aug=False, skewed_ratio=opt.skewed_ratio)
+    root = f"{project_dir}/data/cifar10s"
+    train_loader = get_cifar10s(root, split="train", batch_size=opt.batch_size, aug=False, skewed_ratio=opt.skew_ratio)
+    val_loader = get_cifar10s(root, split="valid", batch_size=opt.batch_size, aug=False, skewed_ratio=opt.skew_ratio)
+    test_loader = get_cifar10s(root, split="test", batch_size=opt.batch_size, aug=False, skewed_ratio=opt.skew_ratio)
 
+    opt.color_classifier = f"{project_dir}/FLAC/bias_capturing_classifiers/bcc_cifar10s.pth"
     bcc_path = Path(opt.color_classifier)
     if not bcc_path.exists():
         # Train a vanilla bias-capturing classifier on CIFAR-10S dataset with a standard cross entropy loss
         train_vanilla(opt, train_loader, val_loader, test_loader)
 
     for r in range(repeat_time):
-        logging.info(f"Repeated experiment: {r+1}")
+        # print(f"Repeated experiment: {r+1}")
 
         model, criterion, protected_net = set_model(opt)
 
+        # Evaluation
+        if opt.checkpoint:
+            model.load_state_dict(torch.load(f"{save_path}/best_model.pt")["model"])
+            model.eval()
+
+            with torch.no_grad():
+                all_labels, all_biases, all_preds = [], [], []
+                for images, labels, biases, _ in test_loader:
+                    images = images.cuda()
+
+                    output, _ = model(images)
+                    preds = output.data.max(1, keepdim=True)[1].squeeze(1).cpu()
+
+                    all_labels.append(labels)
+                    all_biases.append(biases)
+                    all_preds.append(preds)
+
+                fin_labels = torch.cat(all_labels)
+                fin_biases = torch.cat(all_biases)
+                fin_preds = torch.cat(all_preds)
+
+                ret = get_all_metrics(y_true=fin_labels, y_pred=fin_preds, sensitive_features=fin_biases)
+                print_all_metrics(ret=ret)
+
+            sys.exit()
+
+        #     ret["time per epoch"] = total_time / opt.epochs
+        #     for i in range(len(metric_index)):
+        #         results[metric_index[i]].append(ret[metric_index[i]])
+
+        # for m_index in metric_index:
+        #     fout.write(m_index + "\t")
+        #     for i in range(repeat_time):
+        #         fout.write("%f\t" % results[m_index][i])
+        #     fout.write("%f\t%f\n" % (mean(results[m_index]), std(results[m_index])))
+        # fout.close()
+
         decay_epochs = [opt.epochs // 3, opt.epochs * 2 // 3]
-        logging.info(f"decay_epochs: {decay_epochs}")
+        print(f"decay_epochs: {decay_epochs}")
 
         optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=decay_epochs, gamma=0.1)
-
-        (save_path / "checkpoints").mkdir(parents=True, exist_ok=True)
 
         best_accs = 0
         best_epochs = 0
         best_stats = {}
         start_time = time.time()
         for epoch in range(1, opt.epochs + 1):
-            logging.info(f"Epoch {epoch}")
-            logging.info(f"[{epoch} / {opt.epochs}] Learning rate: {scheduler.get_last_lr()[0]}")
+            print(f"Epoch {epoch}")
+            print(f"[{epoch} / {opt.epochs}] Learning rate: {scheduler.get_last_lr()[0]}")
             loss, cllossp, milossp = train(opt, model, protected_net, train_loader, criterion, optimizer)
-            logging.info(f"[{epoch} / {opt.epochs}] Loss: {loss} Loss CE: {cllossp} Loss MI: {milossp}")
+            print(f"[{epoch} / {opt.epochs}] Loss: {loss} Loss CE: {cllossp} Loss MI: {milossp}")
 
             scheduler.step()
             stats = pretty_dict(epoch=epoch)
@@ -265,57 +277,22 @@ def main():
             stats["test/acc"] = test_accs.item()
             stats["test/acc_unbiased"] = torch.mean(test_attrwise_accs).item() * 100
 
-            logging.info(f"[{epoch} / {opt.epochs}] {stats}")
+            print(f"[{epoch} / {opt.epochs}] {stats}")
 
             if stats["test/acc_unbiased"] > best_accs:
                 best_accs = stats["test/acc_unbiased"]
                 best_epochs = epoch
                 best_stats = pretty_dict(**{f"best_{k}": v for k, v in stats.items()})
 
-                save_file = save_path / "checkpoints" / f"best_test_repeat{r+1}.pth"
-                save_model(model, optimizer, opt, epoch, save_file)
+            print(f"[{epoch} / {opt.epochs}] best test accuracy: {best_accs:.6f} at epoch {best_epochs} \n best_stats: {best_stats}")
 
-            logging.info(f"[{epoch} / {opt.epochs}] best test accuracy: {best_accs:.6f} at epoch {best_epochs} \n best_stats: {best_stats}")
+        save_file = save_path / "best_model.pt"
+        save_model(model, optimizer, opt, epoch, save_file)
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        logging.info(f"Total training time: {total_time_str}")
-
-        save_file = save_path / "checkpoints" / f"last_repeat{r+1}.pth"
-        save_model(model, optimizer, opt, opt.epochs, save_file)
-
-        # Evaluation
-        model.eval()
-
-        with torch.no_grad():
-            all_labels, all_biases, all_preds = [], [], []
-            for images, labels, biases, _ in test_loader:
-                images = images.cuda()
-
-                output, _ = model(images)
-                preds = output.data.max(1, keepdim=True)[1].squeeze(1).cpu()
-
-                all_labels.append(labels)
-                all_biases.append(biases)
-                all_preds.append(preds)
-
-            fin_labels = torch.cat(all_labels)
-            fin_biases = torch.cat(all_biases)
-            fin_preds = torch.cat(all_preds)
-
-            ret = get_all_metrics(y_true=fin_labels, y_pred=fin_preds, sensitive_features=fin_biases)
-            print_all_metrics(ret=ret)
-
-        ret["time per epoch"] = total_time / opt.epochs
-        for i in range(len(metric_index)):
-            results[metric_index[i]].append(ret[metric_index[i]])
-
-    for m_index in metric_index:
-        fout.write(m_index + "\t")
-        for i in range(repeat_time):
-            fout.write("%f\t" % results[m_index][i])
-        fout.write("%f\t%f\n" % (mean(results[m_index]), std(results[m_index])))
-    fout.close()
+        print(f"Total training time: {total_time_str}")
+        print(f"Time per epoch: {total_time / opt.epochs:.6f}")
 
 
 if __name__ == "__main__":

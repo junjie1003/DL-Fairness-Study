@@ -49,13 +49,13 @@ class Trainer(trainer.GenericTrainer):
             labels = targets
 
             if self.cuda:
-                inputs = inputs.cuda(self.device)
-                labels = labels.cuda(self.device)
-            t_inputs = inputs.to(self.t_device)
+                inputs = inputs.cuda()
+                labels = labels.cuda()
+            t_inputs = inputs.cuda()
 
             outputs = model(inputs)
             t_outputs = teacher(t_inputs)
-            kd_loss = compute_hinton_loss(outputs, t_outputs, kd_temp=self.kd_temp, device=self.device)
+            kd_loss = compute_hinton_loss(outputs, t_outputs, kd_temp=self.kd_temp)
 
             loss = self.criterion(outputs, labels) + self.lambh * kd_loss
 

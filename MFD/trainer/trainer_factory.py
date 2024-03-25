@@ -13,37 +13,38 @@ class TrainerFactory:
 
     @staticmethod
     def get_trainer(method, **kwargs):
-        if method == 'scratch':
+        if method == "scratch":
             import trainer.vanilla_train as trainer
-        elif method == 'kd_hinton':
+        elif method == "kd_hinton":
             import trainer.kd_hinton as trainer
-        elif method == 'kd_fitnet':
+        elif method == "kd_fitnet":
             import trainer.kd_fitnet as trainer
-        elif method == 'kd_at':
+        elif method == "kd_at":
             import trainer.kd_at as trainer
-        elif method == 'kd_nst':
+        elif method == "kd_nst":
             import trainer.kd_nst as trainer
-        elif method == 'kd_mfd':
+        elif method == "kd_mfd":
             import trainer.kd_mfd as trainer
-        elif method == 'scratch_mmd':
+        elif method == "scratch_mmd":
             import trainer.scratch_mmd as trainer
-        elif method == 'adv_debiasing':
+        elif method == "adv_debiasing":
             import trainer.adv_debiasing as trainer
         else:
-            raise Exception('Not allowed method')
+            raise Exception("Not allowed method")
         return trainer.Trainer(**kwargs)
 
 
 class GenericTrainer:
-    '''
-    Base class for trainer; to implement a new training routine, inherit from this. 
-    '''
+    """
+    Base class for trainer; to implement a new training routine, inherit from this.
+    """
+
     def __init__(self, model, args, optimizer, teacher=None):
         self.get_inter = args.get_inter
-        
-        self.cuda = args.cuda
-        self.device = args.device
-        self.t_device = args.t_device
+
+        # self.cuda = args.cuda
+        # self.device = args.gpu
+        # self.t_device = args.t_device
         self.term = args.term
         self.lr = args.lr
         self.parallel = args.parallel
@@ -53,53 +54,53 @@ class GenericTrainer:
         self.teacher = teacher
         self.optimizer = optimizer
         self.optim_type = args.optimizer
-        self.img_size = args.img_size if not 'cifar10s' in args.dataset else 32
-        self.criterion=torch.nn.CrossEntropyLoss()
+        self.img_size = args.img_size if not "cifar10s" in args.dataset else 32
+        self.criterion = torch.nn.CrossEntropyLoss()
         self.scheduler = None
 
         self.log_name = make_log_name(args)
-        self.log_dir = os.path.join(args.log_dir, args.date, args.dataset, args.method)
-        self.save_dir = os.path.join(args.save_dir, args.date, args.dataset, args.method)
+        project_dir = "/root/DL-Fairness-Study"
+        # self.log_dir = os.path.join(args.log_dir, args.date, args.dataset, args.method)
+        self.save_dir = os.path.join(project_dir, "checkpoints", self.log_name)
 
         decay_epochs = [args.epochs // 4, args.epochs // 2, args.epochs * 3 // 4]
         print(decay_epochs)
 
-        if self.optim_type == 'Adam' and self.optimizer is not None:
+        if self.optim_type == "Adam" and self.optimizer is not None:
             # self.scheduler = ReduceLROnPlateau(self.optimizer)
             self.scheduler = MultiStepLR(self.optimizer, milestones=decay_epochs, gamma=0.1)
-        else: 
+        else:
             self.scheduler = MultiStepLR(self.optimizer, [30, 60, 90], gamma=0.1)
 
-    def evaluate(self, model, loader, criterion, device=None, groupwise=False):
+    def evaluate(self, model, loader, criterion, groupwise=False):
         model.eval()
         num_groups = loader.dataset.num_groups
         num_classes = loader.dataset.num_classes
-        device = self.device if device is None else device
+        # device = self.device if device is None else device
 
-        eval_acc = 0 if not groupwise else torch.zeros(num_groups, num_classes).cuda(device)
-        eval_loss = 0 if not groupwise else torch.zeros(num_groups, num_classes).cuda(device)
-        eval_eopp_list = torch.zeros(num_groups, num_classes).cuda(device)
-        eval_data_count = torch.zeros(num_groups, num_classes).cuda(device)
-        
-        if 'Custom' in type(loader).__name__:
+        eval_acc = 0 if not groupwise else torch.zeros(num_groups, num_classes).cuda()
+        eval_loss = 0 if not groupwise else torch.zeros(num_groups, num_classes).cuda()
+        eval_eopp_list = torch.zeros(num_groups, num_classes).cuda()
+        eval_data_count = torch.zeros(num_groups, num_classes).cuda()
+
+        if "Custom" in type(loader).__name__:
             loader = loader.generate()
         with torch.no_grad():
             for j, eval_data in enumerate(loader):
                 # Get the inputs
                 inputs, _, groups, classes, _ = eval_data
                 #
-                labels = classes 
-                if self.cuda:
-                    inputs = inputs.cuda(device)
-                    labels = labels.cuda(device)
-                    groups = groups.cuda(device)
+                labels = classes
+
+                inputs = inputs.cuda()
+                labels = labels.cuda()
+                groups = groups.cuda()
 
                 outputs = model(inputs)
 
                 if groupwise:
-                    if self.cuda:
-                        groups = groups.cuda(device)
-                    loss = nn.CrossEntropyLoss(reduction='none')(outputs, labels)
+                    groups = groups.cuda()
+                    loss = nn.CrossEntropyLoss(reduction="none")(outputs, labels)
                     preds = torch.argmax(outputs, 1)
                     acc = (preds == labels).float().squeeze()
                     for g in range(num_groups):
@@ -127,28 +128,28 @@ class GenericTrainer:
             eval_max_eopp = torch.max(eval_max_eopp).item()
         model.train()
         return eval_loss, eval_acc, eval_max_eopp
-    
-    def save_model(self, save_dir, log_name="", model=None):
+
+    def save_model(self, save_dir, model=None):
         model_to_save = self.model if model is None else model
-        model_savepath = os.path.join(save_dir, log_name + '.pt')
+        model_savepath = f"{save_dir}/best_model.pt"
         torch.save(model_to_save.state_dict(), model_savepath)
 
-        print('Model saved to %s' % model_savepath)
+        print("Model saved to %s" % model_savepath)
 
-    def compute_confusion_matix(self, dataset='test', num_classes=2,
-                                dataloader=None, log_dir="", log_name=""):
+    def compute_confusion_matrix(self, dataset="test", num_classes=2, dataloader=None, log_dir=""):
         from scipy.io import savemat
         from collections import defaultdict
+
         self.model.eval()
         confu_mat = defaultdict(lambda: np.zeros((num_classes, num_classes)))
-        print('# of {} data : {}'.format(dataset, len(dataloader.dataset)))
+        print("# of {} data : {}".format(dataset, len(dataloader.dataset)))
 
         predict_mat = {}
         output_set = torch.tensor([])
         group_set = torch.tensor([], dtype=torch.long)
         target_set = torch.tensor([], dtype=torch.long)
         intermediate_feature_set = torch.tensor([])
-        
+
         with torch.no_grad():
             for i, data in enumerate(dataloader):
                 # Get the inputs
@@ -156,9 +157,8 @@ class GenericTrainer:
                 labels = targets
                 groups = groups.long()
 
-                if self.cuda:
-                    inputs = inputs.cuda(self.device)
-                    labels = labels.cuda(self.device)
+                inputs = inputs.cuda()
+                labels = labels.cuda()
 
                 # forward
 
@@ -178,21 +178,21 @@ class GenericTrainer:
                     mask = groups == i
                     if len(labels[mask]) != 0:
                         confu_mat[str(i)] += confusion_matrix(
-                            labels[mask].cpu().numpy(), pred[mask].cpu().numpy(),
-                            labels=[i for i in range(num_classes)])
+                            labels[mask].cpu().numpy(), pred[mask].cpu().numpy(), labels=[i for i in range(num_classes)]
+                        )
 
-        predict_mat['group_set'] = group_set.numpy()
-        predict_mat['target_set'] = target_set.numpy()
-        predict_mat['output_set'] = output_set.numpy()
+        predict_mat["group_set"] = group_set.numpy()
+        predict_mat["target_set"] = target_set.numpy()
+        predict_mat["output_set"] = output_set.numpy()
         if self.get_inter:
-            predict_mat['intermediate_feature_set'] = intermediate_feature_set.numpy()
-            
-        savepath = os.path.join(log_dir, log_name + '_{}_confu'.format(dataset))
-        print('savepath', savepath)
+            predict_mat["intermediate_feature_set"] = intermediate_feature_set.numpy()
+
+        savepath = os.path.join(log_dir, "{}_confu".format(dataset))
+        print("savepath", savepath)
         savemat(savepath, confu_mat, appendmat=True)
 
-        savepath_pred = os.path.join(log_dir, log_name + '_{}_pred'.format(dataset))
+        savepath_pred = os.path.join(log_dir, "{}_pred".format(dataset))
         savemat(savepath_pred, predict_mat, appendmat=True)
 
-        print('Computed confusion matrix for {} dataset successfully!'.format(dataset))
+        print("Computed confusion matrix for {} dataset successfully!".format(dataset))
         return confu_mat

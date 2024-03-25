@@ -44,9 +44,8 @@ class Trainer(trainer.GenericTrainer):
             
             labels = targets
 
-            if self.cuda:
-                inputs = inputs.cuda(device=self.device)
-                labels = labels.cuda(device=self.device)
+            inputs = inputs.cuda()
+            labels = labels.cuda()
             outputs = model(inputs)
             loss = self.criterion(outputs, labels)
 

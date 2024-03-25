@@ -1,16 +1,9 @@
 import torch
-import numpy as np
-from copy import deepcopy
 from sklearn.metrics import accuracy_score, roc_auc_score
-from fairlearn.metrics import (
-    demographic_parity_difference,
-    demographic_parity_ratio,
-    false_positive_rate,
-    false_negative_rate,
-)
+from fairlearn.metrics import demographic_parity_difference, demographic_parity_ratio, false_positive_rate, false_negative_rate
 
 
-def prepare_data(dataloader, model, device):
+def prepare_data(dataloader, model):
     x_, y_, a_ = [], [], []
     for batch_idx, (images, labels) in enumerate(dataloader):
         gender = labels[:, 20]
@@ -21,7 +14,7 @@ def prepare_data(dataloader, model, device):
         if batch_idx == 0:
             print(images.shape)
 
-        X = model.get_features(images.to(device)).detach().cpu()
+        X = model.get_features(images.cuda()).detach().cpu()
 
         if batch_idx == 0:
             print(X.shape)
@@ -31,14 +24,14 @@ def prepare_data(dataloader, model, device):
     return torch.cat(x_), torch.cat(y_), torch.cat(a_)
 
 
-def prepare_cifar10s_data(dataloader, model, device):
+def prepare_cifar10s_data(dataloader, model):
     x_, y_, a_ = [], [], []
     for batch_idx, (images, labels, biases) in enumerate(dataloader):
         a_.append(biases)
         y_.append(labels)
         if batch_idx == 0:
             print(images.shape)
-        X = model.get_features(images.to(device)).detach().cpu()
+        X = model.get_features(images.cuda()).detach().cpu()
         if batch_idx == 0:
             print(X.shape)
         x_.append(X)
@@ -46,14 +39,14 @@ def prepare_cifar10s_data(dataloader, model, device):
     return torch.cat(x_), torch.cat(y_), torch.cat(a_)
 
 
-def prepare_utkface_data(dataloader, model, device):
+def prepare_utkface_data(dataloader, model):
     x_, y_, a_ = [], [], []
     for batch_idx, (images, labels, biases) in enumerate(dataloader):
         a_.append(biases)
         y_.append(labels)
         if batch_idx == 0:
             print(images.shape)
-        X = model.get_features(images.to(device)).detach().cpu()
+        X = model.get_features(images.cuda()).detach().cpu()
         if batch_idx == 0:
             print(X.shape)
         x_.append(X)

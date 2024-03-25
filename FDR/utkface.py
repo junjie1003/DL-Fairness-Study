@@ -1,61 +1,51 @@
+import os
 import sys
 import time
-import argparse
+import torch
 import datetime
 import numpy as np
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
 
 from pathlib import Path
 from copy import deepcopy
 from numpy import mean, std
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
 from torch.utils.data import TensorDataset
+
+project_dir = "/root/DL-Fairness-Study"
+sys.path.insert(1, os.path.join(project_dir, "FDR"))
 
 from utils import *
 from models import MyResNet
-
-sys.path.insert(1, "/root/study")
-from helper import set_seed
 from datasets.utkface import get_utkface
+
+sys.path.insert(1, project_dir)
+from helper import set_seed
+from arguments import get_args
 from metrics import get_metric_index, get_all_metrics, print_all_metrics
 
-parser = argparse.ArgumentParser(description="fairness")
-parser.add_argument("--method", type=str, default="M2")
-parser.add_argument("--ft_epoch", type=int, default=1000)
-parser.add_argument("--ft_lr", type=float, default=1e-3)
-parser.add_argument("--alpha", type=float, default=2.0)
-parser.add_argument("--constraint", type=str, default="EO")
-parser.add_argument("--sensitive", type=str, default="race")
-parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--data_path", type=str, default="../data/utkface")
-parser.add_argument("--batch_size", type=int, default=-1)
-parser.add_argument("--checkpoint", type=str, default=None)
-args = parser.parse_args()
+
+args = get_args()
 
 set_seed(args.seed)
 print(args)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
+# result_dir = "../results/utkface"
+# result_path = Path(result_dir)
+# result_path.mkdir(parents=True, exist_ok=True)
+# fout = open("/".join([str(result_path), f"fdr_{args.constraint.lower()}_{args.sensitive.lower()}_gender.txt"]), "w")
 
-result_dir = "../results/utkface"
-result_path = Path(result_dir)
-result_path.mkdir(parents=True, exist_ok=True)
-fout = open("/".join([str(result_path), f"fdr_{args.constraint.lower()}_{args.sensitive.lower()}_gender.txt"]), "w")
+# results = {}
+# metric_index = get_metric_index()
+# for m_index in metric_index:
+#     results[m_index] = []
 
-results = {}
-metric_index = get_metric_index()
-for m_index in metric_index:
-    results[m_index] = []
+TRAIN_BS = 256
+TEST_BS = 512
 
-TRAIN_BS = 1024
-TEST_BS = 2048
-
-repeat_time = 10
-root = args.data_path
+repeat_time = 1
+root = Path(f"{project_dir}/data/utkface")
 
 train_dataset, train_loader = get_utkface(root, split="train", batch_size=TRAIN_BS, bias_attr=args.sensitive, img_size=224)
 
@@ -74,7 +64,7 @@ def train_per_epoch(model, optimizer, criterion, epoch, num_epochs):
         optimizer.zero_grad()
 
         # move to GPU
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.cuda(), labels.cuda()
         # if batch_idx == 0:
         #     print(images.shape, labels.shape)
 
@@ -104,7 +94,7 @@ def valid_per_epoch(model, epoch, num_epochs, criterion):
 
     for batch_idx, (images, labels, biases) in enumerate(val_loader):
         # move to GPU
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.cuda(), labels.cuda()
 
         # forward
         outputs = model.forward(images)
@@ -128,7 +118,7 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
     model.eval()
 
     best_clf = None
-    method = args.method
+    method = args.finetune_method
 
     ###################################################
     # Option 1 (B1): Directly test
@@ -141,13 +131,13 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
     ################
     # Prepare the dataset
     ################
-    x_train, y_train, a_train = prepare_utkface_data(train_loader, model, device)
+    x_train, y_train, a_train = prepare_utkface_data(train_loader, model)
     print(x_train.shape, y_train.shape, a_train.shape)
 
-    x_test, y_test, a_test = prepare_utkface_data(test_loader, model, device)
+    x_test, y_test, a_test = prepare_utkface_data(test_loader, model)
     print(x_test.shape, y_test.shape, a_test.shape)
 
-    x_finetune, y_finetune, a_finetune = prepare_utkface_data(val_loader, model, device)
+    x_finetune, y_finetune, a_finetune = prepare_utkface_data(val_loader, model)
     print(x_finetune.shape, y_finetune.shape, a_finetune.shape)
 
     if method == "B1":
@@ -183,8 +173,8 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
     model.train()
     model.set_grad(False)
     model.append_last_layer()
-    model = model.to(device)
-    optimizer = optim.SGD(model.out_fc.parameters(), lr=args.ft_lr, momentum=0.9, weight_decay=5e-4)
+    model = model.cuda()
+    optimizer = optim.SGD(model.out_fc.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
     finetune_dataset = TensorDataset(x_finetune, y_finetune, a_finetune)
     # For B3 and M2, considering balance, only tried full batch
     if args.batch_size < 0:
@@ -196,19 +186,19 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
     print(len(finetune_dataset))
 
     weights = max(torch.bincount(y_finetune)) / torch.bincount(y_finetune)
-    class_weights = torch.FloatTensor(weights).to(device)
+    class_weights = torch.FloatTensor(weights).cuda()
     print(torch.bincount(y_finetune))
     print(class_weights)
 
     losses = []
     trigger_times = 0
     best_loss = 1e9
-    for epoch in range(1, args.ft_epoch + 1):
+    for epoch in range(1, args.epochs + 1):
         epoch_loss = 0.0
         epoch_loss_fairness = 0.0
         epoch_acc = 0.0
         for batch_idx, (x, y, a) in enumerate(finetuneloader):
-            x, y, a = x.to(device), y.to(device), a.to(device)
+            x, y, a = x.cuda(), y.cuda(), a.cuda()
             optimizer.zero_grad()
             outputs = model.out_fc(x)
             log_softmax, softmax = F.log_softmax(outputs, dim=1), F.softmax(outputs, dim=1)
@@ -244,8 +234,7 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
         epoch_acc /= len(finetune_dataset)
         losses.append(epoch_loss)
         print(
-            "FINETUNE Epoch %d/%d   Loss_1: %.4f   Loss_2: %.4f   Accuracy: %.4f"
-            % (epoch, args.ft_epoch, epoch_loss, epoch_loss_fairness, epoch_acc)
+            "FINETUNE Epoch %d/%d   Loss_1: %.4f   Loss_2: %.4f   Accuracy: %.4f" % (epoch, args.epochs, epoch_loss, epoch_loss_fairness, epoch_acc)
         )
 
     model.eval()
@@ -258,7 +247,7 @@ def Finetune(model, criterion, train_loader, val_loader, test_loader):
         loader = torch.utils.data.DataLoader(dataset, batch_size=TEST_BS, shuffle=False)
         outs = []
         for x in loader:
-            out = F.softmax(model.out_fc(x[0].to(device)), dim=1).cpu().detach().numpy()
+            out = F.softmax(model.out_fc(x[0].cuda()), dim=1).cpu().detach().numpy()
             outs.append(out)
         outs = np.concatenate(outs)
         pred = np.argmax(outs, 1)
@@ -300,12 +289,13 @@ def set_model(num_classes, pretrain):
 
 def main():
     model, criterion = set_model(num_classes=2, pretrain=True)
-
+    ckpt_path = Path(f"{project_dir}/checkpoints/fdr_{args.constraint.lower()}-utkface_{args.sensitive}-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}")
+    ckpt_path.mkdir(parents=True, exist_ok=True)
     best_model = None
     start_time = time.time()
-    if args.checkpoint is not None:
-        print("Recovering from %s ..." % (args.checkpoint))
-        checkpoint = torch.load(args.checkpoint)
+    if args.checkpoint:
+        print("Recovering from %s ..." % (f"{ckpt_path}/best_model.pt"))
+        checkpoint = torch.load(f"{ckpt_path}/best_model.pt")
         model.load_state_dict(checkpoint["model_state_dict"])
         best_model = deepcopy(model)
     else:
@@ -340,19 +330,15 @@ def main():
             scheduler.step()
 
         checkpoint = {"model_state_dict": best_model.state_dict()}
-        ckpt_path = Path("./checkpoints")
-        ckpt_path.mkdir(parents=True, exist_ok=True)
-        torch.save(
-            checkpoint,
-            f"{str(ckpt_path)}/ckpt_utkface_{args.constraint.lower()}_{args.sensitive}_seed{str(args.seed)}.pkl",
-        )
+        torch.save(checkpoint, f"{ckpt_path}/best_model.pt")
+
     training_time = time.time() - start_time
 
     ################
     # Finetune and test #
     ################
     for r in range(repeat_time):
-        print(f"Repeated experiment: {r+1}")
+        # print(f"Repeated experiment: {r+1}")
 
         model = deepcopy(best_model)
 
@@ -362,17 +348,17 @@ def main():
 
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print(f"Total training time: {total_time_str}")
-        ret["time per epoch"] = total_time / args.ft_epoch
+        print(f"Time per epoch: {total_time / args.epochs:.6f}")
 
-        for i in range(len(metric_index)):
-            results[metric_index[i]].append(ret[metric_index[i]])
+    #     for i in range(len(metric_index)):
+    #         results[metric_index[i]].append(ret[metric_index[i]])
 
-    for m_index in metric_index:
-        fout.write(m_index + "\t")
-        for i in range(repeat_time):
-            fout.write("%f\t" % results[m_index][i])
-        fout.write("%f\t%f\n" % (mean(results[m_index]), std(results[m_index])))
-    fout.close()
+    # for m_index in metric_index:
+    #     fout.write(m_index + "\t")
+    #     for i in range(repeat_time):
+    #         fout.write("%f\t" % results[m_index][i])
+    #     fout.write("%f\t%f\n" % (mean(results[m_index]), std(results[m_index])))
+    # fout.close()
 
 
 if __name__ == "__main__":

@@ -1,56 +1,36 @@
-import argparse
-import datetime
-import logging
-import time
-from pathlib import Path
-
-import numpy as np
-import torch
-from torch import nn
-import torch.nn.functional as F
-from tqdm import tqdm
-
+import os
 import sys
-sys.path.insert(1, './')
+import time
+import torch
+import logging
+import datetime
+import numpy as np
+import torch.nn.functional as F
 
+from torch import nn
+from tqdm import tqdm
+from pathlib import Path
+from numpy import mean, std
+
+project_dir = "/root/DL-Fairness-Study"
+sys.path.insert(1, os.path.join(project_dir, "BM"))
+
+from debias.utils.logging import set_logging
 from debias.datasets.utk_face import get_utk_face
 from debias.networks.resnet import FCResNet18_Base
-from debias.utils.logging import set_logging
-from debias.utils.utils import (AverageMeter, MultiDimAverageMeter, accuracy,
-                                pretty_dict, save_model, set_seed)
+from debias.utils.utils import AverageMeter, MultiDimAverageMeter, accuracy, pretty_dict, save_model, set_seed
 
-import os
-sys.path.insert(1, '/root/study')
+sys.path.insert(1, project_dir)
 
-from numpy import mean, std
+from arguments import get_args
 from metrics import get_metric_index, get_all_metrics, print_all_metrics
-
-
-def parse_option():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_name', type=str, default='test')
-    parser.add_argument('--gpu', type=int, default=0)
-    parser.add_argument('--task', type=str, default='race')
-
-    parser.add_argument('--epochs', type=int, default=40)
-    parser.add_argument('--seed', type=int, default=1)
-
-    parser.add_argument('--bs', type=int, default=128, help='batch_size')
-    parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--training_ratio', type=float, default=3)
-    parser.add_argument('--alpha', type=float, default=1)
-
-    opt = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(opt.gpu)
-
-    return opt
 
 
 def set_model():
     model = FCResNet18_Base().cuda()
     class_criterion = nn.CrossEntropyLoss()
     domain_criterion = nn.CrossEntropyLoss()
-    
+
     class_network = nn.Linear(512, 2).cuda()
     domain_network = nn.Linear(512, 2).cuda()
 
@@ -66,27 +46,27 @@ def train(train_loader, model, criterion, optimizer, epoch, opt):
     for images, labels, _, biases, _, _ in tqdm(train_iter, ascii=True):
         bsz = labels.shape[0]
         labels, biases = labels.cuda(), biases.cuda()
-        
+
         optimizer[0].zero_grad()
         optimizer[1].zero_grad()
         optimizer[2].zero_grad()
-        
+
         images = images.cuda()
         features = model[0](images)
         class_out = model[1](features)
         domain_out = model[2](features)
 
         class_loss = criterion[0](class_out, labels)
-        domain_loss = criterion[1](domain_out, biases) 
+        domain_loss = criterion[1](domain_out, biases)
 
         if epoch % opt.training_ratio == 0:
             log_softmax = F.log_softmax(domain_out, dim=1)
             confusion_loss = -log_softmax.mean(dim=1).mean()
-            loss = class_loss + opt.alpha*confusion_loss
+            loss = class_loss + opt.alpha * confusion_loss
             loss.backward()
             optimizer[0].step()
             optimizer[1].step()
-        
+
         else:
             # Update the domain classifier
             domain_loss.backward()
@@ -113,75 +93,104 @@ def validate(val_loader, model):
 
             preds = output.data.max(1, keepdim=True)[1].squeeze(1)
 
-            acc1, = accuracy(output, labels, topk=(1,))
+            (acc1,) = accuracy(output, labels, topk=(1,))
             top1.update(acc1[0], bsz)
 
             corrects = (preds == labels).long()
             attrwise_acc_meter.add(corrects.cpu(), torch.stack([labels.cpu(), biases.cpu()], dim=1))
 
-    return top1.avg, attrwise_acc_meter.get_mean(), attrwise_acc_meter.get_acc_diff() 
+    return top1.avg, attrwise_acc_meter.get_mean(), attrwise_acc_meter.get_acc_diff()
 
 
 def main():
-    opt = parse_option()
+    opt = get_args()
+    exp_name = f"adv-utkface_{opt.sensitive}-lr{opt.lr}-bs{opt.batch_size}-epochs{opt.epochs}-seed{opt.seed}"
 
-    exp_name = f'adv-utk_face_{opt.task}-{opt.exp_name}-lr{opt.lr}-bs{opt.bs}-seed{opt.seed}'
-    opt.exp_name = exp_name
+    # result_dir = f"../results/utkface"
+    # result_path = Path(result_dir)
+    # result_path.mkdir(parents=True, exist_ok=True)
+    # if opt.sensitive == "age":
+    #     fout = open("/".join([str(result_path), f"adv_age_gender.txt"]), "w")
+    # elif opt.sensitive == "race":
+    #     fout = open("/".join([str(result_path), f"adv_race_gender.txt"]), "w")
 
-    result_dir = f'../results/utkface'
-    result_path = Path(result_dir)
-    result_path.mkdir(parents=True, exist_ok=True)
-    if opt.task == 'age':
-        fout = open('/'.join([str(result_path), f'adv_age_gender.txt']), 'w')
-    elif opt.task == 'race':
-        fout = open('/'.join([str(result_path), f'adv_race_gender.txt']), 'w')
+    # results = {}
+    # metric_index = get_metric_index()
+    # for m_index in metric_index:
+    #     results[m_index] = []
 
-    results = {}
-    metric_index = get_metric_index()
-    for m_index in metric_index:
-        results[m_index] = []
+    repeat_time = 1
 
-    repeat_time = 10
-
-    output_dir = f'exp_results/{exp_name}'
+    output_dir = f"{project_dir}/checkpoints/{exp_name}"
     save_path = Path(output_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
-    set_logging(exp_name, 'INFO', str(save_path))
-    logging.info(f'Set seed: {opt.seed}')
+    print(f"Set seed: {opt.seed}")
     set_seed(opt.seed)
-    logging.info(f'save_path: {save_path}')
+    print(f"save_path: {save_path}")
 
     np.set_printoptions(precision=3)
     torch.set_printoptions(precision=3)
 
-    root = '../data/utkface'
+    root = f"{project_dir}/data/utkface"
     train_loader = get_utk_face(
         root,
-        batch_size=opt.bs,
-        bias_attr=opt.task,
-        split='train',
-        aug=False, )
+        batch_size=opt.batch_size,
+        bias_attr=opt.sensitive,
+        split="train",
+        aug=False,
+    )
 
     val_loaders = {}
-    val_loaders['valid'] = get_utk_face(
-        root,
-        batch_size=256,
-        bias_attr=opt.task,
-        split='valid',
-        aug=False)
+    val_loaders["valid"] = get_utk_face(root, batch_size=256, bias_attr=opt.sensitive, split="valid", aug=False)
 
-    val_loaders['test'] = get_utk_face(
-        root,
-        batch_size=256,
-        bias_attr=opt.task,
-        split='test',
-        aug=False)
+    val_loaders["test"] = get_utk_face(root, batch_size=256, bias_attr=opt.sensitive, split="test", aug=False)
 
     for r in range(repeat_time):
-        logging.info(f'Repeated experiment: {r+1}')
+        # print(f"Repeated experiment: {r+1}")
 
         model, criterion = set_model()
+
+        # Evaluation
+        if opt.checkpoint:
+            model[0].load_state_dict(torch.load(f"{save_path}/best_model.pt")["model"])
+            model[0].eval()
+            model[1].load_state_dict(torch.load(f"{save_path}/best_pred.pt")["model"])
+            model[1].eval()
+
+            with torch.no_grad():
+                all_labels, all_biases, all_preds = [], [], []
+                for images, labels, _, biases, _, _ in val_loaders["test"]:
+                    images = images.cuda()
+
+                    feats = model[0](images)
+                    output = model[1](feats)
+
+                    preds = output.data.max(1, keepdim=True)[1].squeeze(1).cpu()
+
+                    all_labels.append(labels)
+                    all_biases.append(biases)
+                    all_preds.append(preds)
+
+                fin_labels = torch.cat(all_labels)
+                fin_biases = torch.cat(all_biases)
+                fin_preds = torch.cat(all_preds)
+
+                ret = get_all_metrics(y_true=fin_labels, y_pred=fin_preds, sensitive_features=fin_biases)
+                print_all_metrics(ret=ret)
+
+            sys.exit()
+
+        #     ret["time per epoch"] = total_time / opt.epochs
+        #     for i in range(len(metric_index)):
+        #         results[metric_index[i]].append(ret[metric_index[i]])
+
+        # for m_index in metric_index:
+        #     fout.write(m_index + "\t")
+        #     for i in range(repeat_time):
+        #         fout.write("%f\t" % results[m_index][i])
+        #     fout.write("%f\t%f\n" % (mean(results[m_index]), std(results[m_index])))
+        # fout.close()
 
         decay_epochs = [opt.epochs // 3, opt.epochs * 2 // 3]
 
@@ -193,20 +202,18 @@ def main():
         scheduler_base = torch.optim.lr_scheduler.MultiStepLR(optimizers[0], milestones=decay_epochs, gamma=0.1)
         scheduler_class = torch.optim.lr_scheduler.MultiStepLR(optimizers[1], milestones=decay_epochs, gamma=0.1)
         scheduler_domain = torch.optim.lr_scheduler.MultiStepLR(optimizers[2], milestones=decay_epochs, gamma=0.1)
-        schedulers = [scheduler_base,scheduler_class, scheduler_domain]
+        schedulers = [scheduler_base, scheduler_class, scheduler_domain]
 
-        logging.info(f'decay_epochs: {decay_epochs}')
+        print(f"decay_epochs: {decay_epochs}")
 
-        # (save_path / 'checkpoints').mkdir(parents=True, exist_ok=True)
-
-        best_accs = {'valid': 0, 'test': 0}
-        best_epochs = {'valid': 0, 'test': 0}
+        best_accs = {"valid": 0, "test": 0}
+        best_epochs = {"valid": 0, "test": 0}
         best_stats = {}
         start_time = time.time()
         for epoch in range(1, opt.epochs + 1):
-            logging.info(f'[{epoch} / {opt.epochs}] Learning rate: {schedulers[0].get_last_lr()[0]}')
+            print(f"[{epoch} / {opt.epochs}] Learning rate: {schedulers[0].get_last_lr()[0]}")
             loss = train(train_loader, model, criterion, optimizers, epoch, opt)
-            logging.info(f'[{epoch} / {opt.epochs}] Loss: {loss:.4f}')
+            print(f"[{epoch} / {opt.epochs}] Loss: {loss:.4f}")
 
             schedulers[0].step()
             schedulers[1].step()
@@ -216,64 +223,36 @@ def main():
             for key, val_loader in val_loaders.items():
                 accs, valid_attrwise_accs, diff = validate(val_loader, model)
 
-                stats[f'{key}/acc'] = accs.item()
-                stats[f'{key}/acc_unbiased'] = torch.mean(valid_attrwise_accs).item() * 100
-                stats[f'{key}/diff'] = diff.item() * 100
+                stats[f"{key}/acc"] = accs.item()
+                stats[f"{key}/acc_unbiased"] = torch.mean(valid_attrwise_accs).item() * 100
+                stats[f"{key}/diff"] = diff.item() * 100
 
                 eye_tsr = train_loader.dataset.eye_tsr
 
-                stats[f'{key}/acc_skew'] = valid_attrwise_accs[eye_tsr > 0.0].mean().item() * 100
-                stats[f'{key}/acc_align'] = valid_attrwise_accs[eye_tsr == 0.0].mean().item() * 100
+                stats[f"{key}/acc_skew"] = valid_attrwise_accs[eye_tsr > 0.0].mean().item() * 100
+                stats[f"{key}/acc_align"] = valid_attrwise_accs[eye_tsr == 0.0].mean().item() * 100
 
-            logging.info(f'[{epoch} / {opt.epochs}] {valid_attrwise_accs} {stats}')
+            print(f"[{epoch} / {opt.epochs}] {valid_attrwise_accs} {stats}")
             for tag in val_loaders.keys():
-                if stats[f'{tag}/acc_unbiased'] > best_accs[tag]:
-                    best_accs[tag] = stats[f'{tag}/acc_unbiased']
+                if stats[f"{tag}/acc_unbiased"] > best_accs[tag]:
+                    best_accs[tag] = stats[f"{tag}/acc_unbiased"]
                     best_epochs[tag] = epoch
-                    best_stats[tag] = pretty_dict(**{f'best_{tag}_{k}': v for k, v in stats.items()})
+                    best_stats[tag] = pretty_dict(**{f"best_{tag}_{k}": v for k, v in stats.items()})
 
-                logging.info(
-                    f'[{epoch} / {opt.epochs}] best {tag} accuracy: {best_accs[tag]:.3f} at epoch {best_epochs[tag]} \n best_stats: {best_stats[tag]}')
+                print(
+                    f"[{epoch} / {opt.epochs}] best {tag} accuracy: {best_accs[tag]:.3f} at epoch {best_epochs[tag]} \n best_stats: {best_stats[tag]}"
+                )
+
+        save_file_base = save_path / "best_model.pt"
+        save_model(model[0], optimizer_base, opt, epoch, save_file_base)
+        save_file_class = save_path / "best_pred.pt"
+        save_model(model[1], optimizer_class, opt, epoch, save_file_class)
 
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        logging.info(f'Total training time: {total_time_str}')
-
-        # Evaluation
-        model[0].eval()
-
-        with torch.no_grad():
-            all_labels, all_biases, all_preds = [], [], []
-            for images, labels, _, biases, _, _ in val_loaders['test']:
-                images = images.cuda()
-
-                feats = model[0](images)
-                output = model[1](feats)
-
-                preds = output.data.max(1, keepdim=True)[1].squeeze(1).cpu()
-
-                all_labels.append(labels)
-                all_biases.append(biases)
-                all_preds.append(preds)
-
-            fin_labels = torch.cat(all_labels)
-            fin_biases = torch.cat(all_biases)
-            fin_preds = torch.cat(all_preds)
-
-            ret = get_all_metrics(y_true=fin_labels, y_pred=fin_preds, sensitive_features=fin_biases)
-            print_all_metrics(ret=ret)
-
-        ret['time per epoch'] = total_time / opt.epochs
-        for i in range(len(metric_index)):
-            results[metric_index[i]].append(ret[metric_index[i]])
-
-    for m_index in metric_index:
-        fout.write(m_index + '\t')
-        for i in range(repeat_time):
-            fout.write('%f\t' % results[m_index][i])
-        fout.write('%f\t%f\n' % (mean(results[m_index]), std(results[m_index])))
-    fout.close()
+        print(f"Total training time: {total_time_str}")
+        print(f"Time per epoch: {total_time / opt.epochs:.6f}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,36 +1,21 @@
+import os
 import torch
 import numpy as np
-import random
-import os
 
 
 def list_files(root, suffix, prefix=False):
     root = os.path.expanduser(root)
-    files = list(
-        filter(
-            lambda p: os.path.isfile(os.path.join(root, p)) and p.endswith(suffix),
-            os.listdir(root)
-        )
-    )
+    files = list(filter(lambda p: os.path.isfile(os.path.join(root, p)) and p.endswith(suffix), os.listdir(root)))
     if prefix is True:
         files = [os.path.join(root, d) for d in files]
     return files
 
 
-def set_seed(seed):
-    torch.manual_seed(seed)
-    # torch.cuda.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
-
 def get_accuracy(outputs, labels, binary=False):
-    #if multi-label classification
-    if len(labels.size())>1:
-        outputs = (outputs>0.0).float()
-        correct = ((outputs==labels)).float().sum()
+    # if multi-label classification
+    if len(labels.size()) > 1:
+        outputs = (outputs > 0.0).float()
+        correct = ((outputs == labels)).float().sum()
         total = torch.tensor(labels.shape[0] * labels.shape[1], dtype=torch.float)
         avg = correct / total
         return avg.item()
@@ -52,41 +37,30 @@ def check_log_dir(log_dir):
 
 
 def make_log_name(args):
-    log_name = args.model
+    log_name = f"{args.method}"
 
-    if args.mode == 'eval':
-        log_name = args.model_path.split('/')[-1]
-        # remove .pt from name
-        log_name = log_name[:-3]
-
+    if args.dataset == "utkface":
+        log_name += f"-{args.dataset}_{args.sensitive}"
     else:
-        if args.pretrained:
-            log_name += '_pretrained'
-        log_name += '_seed{}_epochs{}_bs{}_lr{}'.format(args.seed, args.epochs, args.batch_size, args.lr)
+        log_name += f"-{args.dataset}"
 
-        if args.method == 'adv_debiasing':
-            log_name += '_advlamb{}_eta{}'.format(args.adv_lambda, args.eta)
+    log_name += f"-lr{args.lr}-bs{args.batch_size}-epochs{args.epochs}-seed{args.seed}"
 
-        elif args.method == 'scratch_mmd' or args.method == 'kd_mfd':
-            log_name += '_{}'.format(args.kernel)
-            log_name += '_sigma{}'.format(args.sigma) if args.kernel == 'rbf' else ''
-            log_name += '_jointfeature' if args.jointfeature else ''
-            log_name += '_lambf{}'.format(args.lambf) if args.method == 'scratch_mmd' else ''
+    if args.labelwise:
+        log_name += "-labelwise"
 
-        if args.labelwise:
-            log_name += '_labelwise'
+    if args.teacher_path is not None:
+        log_name += f"-temp{args.kd_temp}-lambh{args.lambh}-lambf{args.lambf}"
 
-        if args.teacher_path is not None:
-            log_name += '_temp{}'.format(args.kd_temp)
-            log_name += '_lambh{}_lambf{}'.format(args.lambh, args.lambf)
+        if args.no_annealing:
+            log_name += "-fixedlamb"
 
-            if args.no_annealing:
-                log_name += '_fixedlamb'
-        if args.dataset == 'celeba' and args.target != 'Attractive':
-            log_name += '_{}'.format(args.target)
+    if args.pretrained:
+        log_name += "-pretrained"
 
-        if args.dataset == 'utkface':
-            log_name += '_{}'.format(args.sensitive)
+    if args.method == "kd_mfd":
+        log_name += "-{}".format(args.kernel)
+        log_name += "-sigma{}".format(args.sigma) if args.kernel == "rbf" else ""
+        log_name += "-jointfeature" if args.jointfeature else ""
 
     return log_name
-
