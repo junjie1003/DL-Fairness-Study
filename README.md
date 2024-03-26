@@ -1,6 +1,6 @@
 # A Large-Scale Empirical Study on Improving the Fairness of Image Classification Models
 
-This is the implementation repository of our ISSTA 2024 paper: **A Large-Scale Empirical Study on Improving the Fairness of Image Classification Models**.
+This is the implementation repository of our ISSTA 2024 paper: **[A Large-Scale Empirical Study on Improving the Fairness of Image Classification Models](https://arxiv.org/abs/2401.03695)**.
 
 ## 1. Description
 
