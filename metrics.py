@@ -34,9 +34,9 @@ def average_odds_difference(y_true, y_pred, *, sensitive_features, method="betwe
     eo = _get_eo_frame(y_true, y_pred, sensitive_features, sample_weight)
 
     tprd = eo.difference(method=method)["tpr"]
-    print(f"True Positive Rate Difference: {tprd}")
+    # print(f"True Positive Rate Difference: {tprd}")
     fprd = eo.difference(method=method)["fpr"]
-    print(f"False Positive Rate Difference: {fprd}")
+    # print(f"False Positive Rate Difference: {fprd}")
 
     return 0.5 * (tprd + fprd)
 
@@ -50,10 +50,10 @@ def accuracy_equality_difference(y_true, y_pred, sensitive_features):
 def multiclass_ovr_fairness(y_true, y_pred, sensitive_features):
     """[ovr]: Calculate metrics for the multiclass case using the one-vs-rest approach."""
 
-    print("y_true:")
-    print(y_true)
-    print("y_pred:")
-    print(y_pred)
+    # print("y_true:")
+    # print(y_true)
+    # print("y_pred:")
+    # print(y_pred)
 
     num_classes = len(torch.unique(y_true))
     print(f"num_classes: {num_classes}")
@@ -134,14 +134,14 @@ def get_all_metrics(y_true, y_pred, sensitive_features):
 
 
 def print_all_metrics(ret):
-    print("\nAccuracy: %.6f\n" % ret["acc"])
-    print("Balanced Accuracy: %.6f\n" % ret["bacc"])
-
-    print("Statistical Parity Difference (SPD): %.6f\n" % ret["spd"])
-    print("Equalized Odds Difference (DEO): %.6f\n" % ret["deo"])
-    print("Equal Opportunity Difference (EOD): %.6f\n" % ret["eod"])
-    print("Average Absolute Odds Difference (AAOD): %.6f\n" % ret["aaod"])
-    print("Accuracy Equality Difference (AED): %.6f\n" % ret["aed"])
+    print("\n========================== Performance and Fairness Metrics ==========================\n")
+    print("Accuracy: %.3f\n" % ret["acc"])
+    print("Balanced Accuracy: %.3f\n" % ret["bacc"])
+    print("Statistical Parity Difference (SPD): %.3f\n" % ret["spd"])
+    print("Equalized Odds Difference (DEO): %.3f\n" % ret["deo"])
+    print("Equal Opportunity Difference (EOD): %.3f\n" % ret["eod"])
+    print("Average Absolute Odds Difference (AAOD): %.3f\n" % ret["aaod"])
+    print("Accuracy Equality Difference (AED): %.3f\n" % ret["aed"])
 
 
 if __name__ == "__main__":
