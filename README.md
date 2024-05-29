@@ -71,6 +71,7 @@ Then you will enter a container. Remember to change `/your/local/path/` to the r
 Here is a demo and you can run `scripts/demo.sh` to have a quick start:
 
 ```bash
+conda activate fairness
 bash scripts/demo.sh
 ```
 
